@@ -1,0 +1,35 @@
+#docker compose up -d          # 启动
+#docker compose ps             # 查看状态
+#docker compose logs -f mysql  # 看日志
+#docker compose down           # 停止（保留数据）
+#docker compose down -v        # 停止并清空数据，下次启动重新初始化空库
+
+services:
+  mysql:
+    image: mysql:8.4
+    container_name: service-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root123456}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-service}
+      MYSQL_USER: ${MYSQL_USER:-service}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-service123456}
+      TZ: Asia/Shanghai
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --default-time-zone=+08:00
+    ports:
+      - "${MYSQL_PORT:-3306}:3306"
+    volumes:
+      # 数据持久化：删除容器不会丢失数据；需要干净初始化时用 docker compose down -v
+      - mysql-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-u", "root", "-p${MYSQL_ROOT_PASSWORD:-root123456}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+volumes:
+  mysql-data:
