@@ -1,0 +1,9 @@
+{
+  "source": "a, b = map(int, input().split())\nprint(a + b)\n",
+  "cases": [
+    { "input": "1 2\n" },
+    { "input": "100 250\n" }
+  ],
+  "timeLimitMs": 1000,
+  "memoryLimitMb": 256
+}

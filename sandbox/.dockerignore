@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+*.md
+smoke-test.sh
+smoke-test.ps1
+sample-job.json
