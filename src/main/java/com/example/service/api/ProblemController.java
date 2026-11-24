@@ -37,8 +37,9 @@ public class ProblemController {
 
     @GetMapping
     public ApiResponse<List<ProblemSummary>> list(@CurrentUser AuthPrincipal principal,
-                                                   @RequestParam(defaultValue = "false") boolean onlyMine) {
-        return ApiResponse.ok(problemService.listProblems(principal, onlyMine));
+                                                   @RequestParam(defaultValue = "false") boolean onlyMine,
+                                                   @RequestParam(defaultValue = "false") boolean archived) {
+        return ApiResponse.ok(problemService.listProblems(principal, onlyMine, archived));
     }
 
     /** 学生端：已发布题目列表。 */
@@ -78,9 +79,24 @@ public class ProblemController {
         return ApiResponse.ok(problemService.publish(problemId, versionId, principal));
     }
 
+    /** 归档题目（软删除）。 */
     @DeleteMapping("/{problemId}")
     public ApiResponse<Void> archive(@PathVariable Long problemId, @CurrentUser AuthPrincipal principal) {
         problemService.archiveProblem(problemId, principal);
+        return ApiResponse.ok();
+    }
+
+    /** 恢复已归档题目。 */
+    @PostMapping("/{problemId}/restore")
+    public ApiResponse<ProblemDetail> restore(@PathVariable Long problemId,
+                                              @CurrentUser AuthPrincipal principal) {
+        return ApiResponse.ok(problemService.restoreProblem(problemId, principal));
+    }
+
+    /** 永久删除已归档题目（不可恢复）。 */
+    @DeleteMapping("/{problemId}/permanent")
+    public ApiResponse<Void> delete(@PathVariable Long problemId, @CurrentUser AuthPrincipal principal) {
+        problemService.deleteProblem(problemId, principal);
         return ApiResponse.ok();
     }
 

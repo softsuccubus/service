@@ -12,4 +12,9 @@ public interface ProblemRepository extends Repository<Problem, Long> {
     List<Problem> findByArchivedFalseOrderByIdDesc();
 
     List<Problem> findByOwnerIdAndArchivedFalseOrderByIdDesc(Long ownerId);
+
+    /** 归档箱列表。 */
+    List<Problem> findByArchivedTrueOrderByIdDesc();
+
+    List<Problem> findByOwnerIdAndArchivedTrueOrderByIdDesc(Long ownerId);
 }

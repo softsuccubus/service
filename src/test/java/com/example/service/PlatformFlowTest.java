@@ -10,6 +10,7 @@ import com.example.service.api.dto.PaperDtos.PaperView;
 import com.example.service.api.dto.ProblemDtos.CreateProblemRequest;
 import com.example.service.api.dto.ProblemDtos.CreateTestCaseRequest;
 import com.example.service.api.dto.ProblemDtos.ProblemDetail;
+import com.example.service.api.dto.ProblemDtos.UpdateProblemRequest;
 import com.example.service.api.dto.ScoreDtos.ManualScoreRequest;
 import com.example.service.api.dto.SubmissionDtos.SubmitRequest;
 import com.example.service.api.dto.SubmissionDtos.SubmitResponse;
@@ -169,6 +170,65 @@ class PlatformFlowTest {
                 .isInstanceOf(ApiException.class);
         assertThat(examRecordRepository.findById(recordId).orElseThrow().getStatus())
                 .isEqualTo(ExamRecordStatus.SUBMITTED);
+    }
+
+    @Test
+    void archiveRestoreAndDeleteProblem() {
+        // 建题 + 测试点，便于验证归档只读与级联删除
+        ProblemDetail created = problemService.createProblem(new CreateProblemRequest(null, "待归档题目",
+                "描述", null, null, List.of("JAVA"), 1000, 256), teacherPrincipal);
+        Long problemId = created.summary().id();
+        problemService.addTestCase(problemId, new CreateTestCaseRequest("样例", "1", "1",
+                new BigDecimal("100.00"), Visibility.PUBLIC), teacherPrincipal);
+
+        // 归档后仍可查看详情，但不在在用列表、出现在归档箱
+        problemService.archiveProblem(problemId, teacherPrincipal);
+        assertThat(problemService.detail(problemId).summary().archived()).isTrue();
+        assertThat(problemService.listProblems(teacherPrincipal, true, false))
+                .noneMatch(p -> p.id().equals(problemId));
+        assertThat(problemService.listProblems(teacherPrincipal, true, true))
+                .anyMatch(p -> p.id().equals(problemId) && p.archived());
+
+        // 已归档题目只读：不可修改、发布或增改测试点
+        assertThatThrownBy(() -> problemService.updateProblem(problemId,
+                new UpdateProblemRequest("新标题", "新描述",
+                        null, null, List.of("JAVA"), 1000, 256), teacherPrincipal))
+                .isInstanceOf(ApiException.class);
+        assertThatThrownBy(() -> problemService.publish(problemId, null, teacherPrincipal))
+                .isInstanceOf(ApiException.class);
+
+        // 恢复后重新可编辑并在用列表中
+        problemService.restoreProblem(problemId, teacherPrincipal);
+        assertThat(problemService.detail(problemId).summary().archived()).isFalse();
+        assertThat(problemService.listProblems(teacherPrincipal, true, false))
+                .anyMatch(p -> p.id().equals(problemId));
+
+        // 未归档时不能删除；归档后可永久删除
+        assertThatThrownBy(() -> problemService.deleteProblem(problemId, teacherPrincipal))
+                .isInstanceOf(ApiException.class);
+        problemService.archiveProblem(problemId, teacherPrincipal);
+        problemService.deleteProblem(problemId, teacherPrincipal);
+        assertThat(problemService.listProblems(teacherPrincipal, true, true))
+                .noneMatch(p -> p.id().equals(problemId));
+        assertThatThrownBy(() -> problemService.detail(problemId))
+                .isInstanceOf(ApiException.class);
+    }
+
+    @Test
+    void cannotDeleteProblemReferencedByPaper() {
+        ProblemDetail created = problemService.createProblem(new CreateProblemRequest(null, "已入卷题目",
+                "描述", null, null, List.of("JAVA"), 1000, 256), teacherPrincipal);
+        Long problemId = created.summary().id();
+        problemService.addTestCase(problemId, new CreateTestCaseRequest("样例", "1", "1",
+                new BigDecimal("100.00"), Visibility.PUBLIC), teacherPrincipal);
+        ProblemDetail published = problemService.publish(problemId, null, teacherPrincipal);
+        paperService.createPaper(new CreatePaperRequest("引用试卷",
+                List.of(new PaperItemRequest(published.summary().currentVersionId(), new BigDecimal("100.00"), 1))),
+                teacherPrincipal);
+
+        problemService.archiveProblem(problemId, teacherPrincipal);
+        assertThatThrownBy(() -> problemService.deleteProblem(problemId, teacherPrincipal))
+                .isInstanceOf(ApiException.class);
     }
 
     @Test

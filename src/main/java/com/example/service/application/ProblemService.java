@@ -18,8 +18,10 @@ import com.example.service.domain.VersionStatus;
 import com.example.service.domain.Visibility;
 import com.example.service.infrastructure.JsonSupport;
 import com.example.service.infrastructure.judge.TestDataStorage;
+import com.example.service.infrastructure.repository.PaperItemRepository;
 import com.example.service.infrastructure.repository.ProblemRepository;
 import com.example.service.infrastructure.repository.ProblemVersionRepository;
+import com.example.service.infrastructure.repository.SubmissionRepository;
 import com.example.service.infrastructure.repository.TestCaseRepository;
 import com.example.service.infrastructure.repository.TestCaseVersionRepository;
 import com.example.service.infrastructure.security.AuthPrincipal;
@@ -49,6 +51,8 @@ public class ProblemService {
     private final ProblemVersionRepository problemVersionRepository;
     private final TestCaseRepository testCaseRepository;
     private final TestCaseVersionRepository testCaseVersionRepository;
+    private final PaperItemRepository paperItemRepository;
+    private final SubmissionRepository submissionRepository;
     private final TestDataStorage testDataStorage;
     private final JsonSupport jsonSupport;
     private final AccessGuard accessGuard;
@@ -60,6 +64,8 @@ public class ProblemService {
                           ProblemVersionRepository problemVersionRepository,
                           TestCaseRepository testCaseRepository,
                           TestCaseVersionRepository testCaseVersionRepository,
+                          PaperItemRepository paperItemRepository,
+                          SubmissionRepository submissionRepository,
                           TestDataStorage testDataStorage,
                           JsonSupport jsonSupport,
                           AccessGuard accessGuard,
@@ -70,6 +76,8 @@ public class ProblemService {
         this.problemVersionRepository = problemVersionRepository;
         this.testCaseRepository = testCaseRepository;
         this.testCaseVersionRepository = testCaseVersionRepository;
+        this.paperItemRepository = paperItemRepository;
+        this.submissionRepository = submissionRepository;
         this.testDataStorage = testDataStorage;
         this.jsonSupport = jsonSupport;
         this.accessGuard = accessGuard;
@@ -112,7 +120,7 @@ public class ProblemService {
     /** 修改题目：草稿版本直接修改；已发布则自动创建新草稿版本（旧版本保持不可变）。 */
     @Transactional
     public ProblemDetail updateProblem(Long problemId, UpdateProblemRequest request, AuthPrincipal principal) {
-        Problem problem = requireProblem(problemId);
+        Problem problem = requireActiveProblem(problemId);
         accessGuard.requireOwnerOrAdmin(principal, problem.getOwnerId(), "题目");
         List<ProblemVersion> versions = problemVersionRepository.findByProblemIdOrderByVersionNoDesc(problemId);
         ProblemVersion latest = versions.isEmpty() ? null : versions.getFirst();
@@ -136,7 +144,7 @@ public class ProblemService {
     /** 发布指定版本（默认最新草稿）：冻结测试点版本快照，并更新题目当前版本。 */
     @Transactional
     public ProblemDetail publish(Long problemId, Long versionId, AuthPrincipal principal) {
-        Problem problem = requireProblem(problemId);
+        Problem problem = requireActiveProblem(problemId);
         accessGuard.requireOwnerOrAdmin(principal, problem.getOwnerId(), "题目");
         ProblemVersion version = versionId == null
                 ? problemVersionRepository.findFirstByProblemIdOrderByVersionNoDesc(problemId)
@@ -170,22 +178,88 @@ public class ProblemService {
         return detail(problemId);
     }
 
+    /** 归档题目：软删除，题目仍可查看，之后可被恢复或永久删除。 */
     @Transactional
     public void archiveProblem(Long problemId, AuthPrincipal principal) {
         Problem problem = requireProblem(problemId);
         accessGuard.requireOwnerOrAdmin(principal, problem.getOwnerId(), "题目");
+        if (problem.isArchived()) {
+            throw ApiException.conflict("题目已归档");
+        }
         problem.setArchived(true);
         problemRepository.save(problem);
         auditService.record(principal.userId(), "PROBLEM_ARCHIVE", "problem", problemId, null);
     }
 
+    /** 恢复已归档题目：重新放回题库，可继续编辑、组卷。 */
+    @Transactional
+    public ProblemDetail restoreProblem(Long problemId, AuthPrincipal principal) {
+        Problem problem = requireProblem(problemId);
+        accessGuard.requireOwnerOrAdmin(principal, problem.getOwnerId(), "题目");
+        if (!problem.isArchived()) {
+            throw ApiException.conflict("题目未归档，无需恢复");
+        }
+        problem.setArchived(false);
+        problemRepository.save(problem);
+        auditService.record(principal.userId(), "PROBLEM_RESTORE", "problem", problemId, "从归档恢复");
+        return detail(problemId);
+    }
+
+    /**
+     * 永久删除已归档题目：级联清除题目版本、测试点及其版本与测试数据文件。
+     * 仅允许删除已归档题目，且必须未被任何试卷引用、没有任何提交记录，避免破坏历史数据。
+     */
+    @Transactional
+    public void deleteProblem(Long problemId, AuthPrincipal principal) {
+        Problem problem = requireProblem(problemId);
+        accessGuard.requireOwnerOrAdmin(principal, problem.getOwnerId(), "题目");
+        if (!problem.isArchived()) {
+            throw ApiException.conflict("请先归档题目后再删除");
+        }
+        List<ProblemVersion> versions = problemVersionRepository.findByProblemIdOrderByVersionNoDesc(problemId);
+        List<Long> versionIds = versions.stream().map(ProblemVersion::getId).toList();
+        if (!versionIds.isEmpty() && paperItemRepository.existsByProblemVersionIdIn(versionIds)) {
+            throw ApiException.conflict("题目已被试卷引用，无法删除");
+        }
+        if (!versionIds.isEmpty() && submissionRepository.existsByProblemVersionIdIn(versionIds)) {
+            throw ApiException.conflict("题目已有提交记录，无法删除");
+        }
+        List<TestCase> testCases = testCaseRepository.findByProblemIdOrderByIdAsc(problemId);
+        List<Long> caseIds = testCases.stream().map(TestCase::getId).toList();
+        if (!caseIds.isEmpty()) {
+            List<TestCaseVersion> caseVersions = testCaseVersionRepository.findByTestCaseIdIn(caseIds);
+            for (TestCaseVersion version : caseVersions) {
+                testDataStorage.delete(version.getInputRef());
+                testDataStorage.delete(version.getExpectedRef());
+            }
+            testCaseVersionRepository.deleteAll(caseVersions);
+        }
+        testCaseRepository.deleteAll(testCases);
+        problemVersionRepository.deleteAll(versions);
+        problemRepository.delete(problem);
+        auditService.record(principal.userId(), "PROBLEM_DELETE", "problem", problemId,
+                "永久删除题目 " + problem.getProblemCode());
+    }
+
+    /** 题目列表；archived=true 时只返回已归档题目（归档箱），否则只返回在用题目。 */
+    @Transactional(readOnly = true)
+    public List<ProblemSummary> listProblems(AuthPrincipal principal, boolean onlyMine, boolean archived) {
+        accessGuard.requireStaff(principal);
+        boolean mine = onlyMine && !principal.isAdmin();
+        List<Problem> problems;
+        if (archived) {
+            problems = mine ? problemRepository.findByOwnerIdAndArchivedTrueOrderByIdDesc(principal.userId())
+                    : problemRepository.findByArchivedTrueOrderByIdDesc();
+        } else {
+            problems = mine ? problemRepository.findByOwnerIdAndArchivedFalseOrderByIdDesc(principal.userId())
+                    : problemRepository.findByArchivedFalseOrderByIdDesc();
+        }
+        return problems.stream().map(this::summary).toList();
+    }
+
     @Transactional(readOnly = true)
     public List<ProblemSummary> listProblems(AuthPrincipal principal, boolean onlyMine) {
-        accessGuard.requireStaff(principal);
-        List<Problem> problems = onlyMine && !principal.isAdmin()
-                ? problemRepository.findByOwnerIdAndArchivedFalseOrderByIdDesc(principal.userId())
-                : problemRepository.findByArchivedFalseOrderByIdDesc();
-        return problems.stream().map(this::summary).toList();
+        return listProblems(principal, onlyMine, false);
     }
 
     /** 学生可见的已发布题目列表（按题目当前发布版本）。 */
@@ -227,7 +301,7 @@ public class ProblemService {
 
     @Transactional
     public TestCaseView addTestCase(Long problemId, CreateTestCaseRequest request, AuthPrincipal principal) {
-        Problem problem = requireProblem(problemId);
+        Problem problem = requireActiveProblem(problemId);
         accessGuard.requireOwnerOrAdmin(principal, problem.getOwnerId(), "题目");
         TestCase testCase = new TestCase();
         testCase.setProblemId(problemId);
@@ -253,7 +327,7 @@ public class ProblemService {
     @Transactional
     public TestCaseView updateTestCase(Long problemId, Long testCaseId, CreateTestCaseRequest request,
                                        AuthPrincipal principal) {
-        Problem problem = requireProblem(problemId);
+        Problem problem = requireActiveProblem(problemId);
         accessGuard.requireOwnerOrAdmin(principal, problem.getOwnerId(), "题目");
         TestCase testCase = testCaseRepository.findById(testCaseId)
                 .filter(tc -> tc.getProblemId().equals(problemId))
@@ -279,7 +353,7 @@ public class ProblemService {
 
     @Transactional
     public void archiveTestCase(Long problemId, Long testCaseId, AuthPrincipal principal) {
-        Problem problem = requireProblem(problemId);
+        Problem problem = requireActiveProblem(problemId);
         accessGuard.requireOwnerOrAdmin(principal, problem.getOwnerId(), "题目");
         TestCase testCase = testCaseRepository.findById(testCaseId)
                 .filter(tc -> tc.getProblemId().equals(problemId))
@@ -332,6 +406,15 @@ public class ProblemService {
     private Problem requireProblem(Long problemId) {
         return problemRepository.findById(problemId)
                 .orElseThrow(() -> ApiException.notFound("题目不存在"));
+    }
+
+    /** 已归档题目只读：修改、发布或测试点变更前须先恢复。 */
+    private Problem requireActiveProblem(Long problemId) {
+        Problem problem = requireProblem(problemId);
+        if (problem.isArchived()) {
+            throw ApiException.conflict("题目已归档，请先恢复后再操作");
+        }
+        return problem;
     }
 
     private ProblemVersion publishedVersion(Problem problem) {

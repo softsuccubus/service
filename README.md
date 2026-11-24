@@ -88,6 +88,12 @@ presentation   按角色聚合的首页视图
 - 修改已发布题目会生成新草稿版本；组卷只允许引用已发布题目版本。
 - `paper_version`：发布时固定题目顺序、分值并要求所有引用题目版本已发布。
 
+题目归档生命周期：`在用 ⇄ 已归档 → 已删除`（`problem.archived`）。归档是软删除，
+题目详情仍可通过 `GET /api/problems/{id}` 查看（但不再出现在列表与该题新的组卷选择中）；
+已归档题目只读，修改/发布/变更测试点前必须先恢复。
+永久删除仅对已归档题目开放，且要求未被任何试卷引用、无提交记录，删除时级联清理
+题目版本、测试点版本与对应测试数据文件。
+
 ## 4. 接口一览
 
 统一响应体：`{"code":0,"message":"ok","data":...}`，错误时 `code` 为 HTTP 状态码。
@@ -101,14 +107,16 @@ presentation   按角色聚合的首页视图
 ### 题库（教师/管理员）
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| GET | `/api/problems?onlyMine=` | 题目列表 |
+| GET | `/api/problems?onlyMine=&archived=` | 题目列表（`archived=true` 查看归档箱） |
 | GET | `/api/problems/published` | 已发布题目（学生可见） |
-| GET | `/api/problems/{id}` | 题目详情（含测试点原始数据，教师端） |
+| GET | `/api/problems/{id}` | 题目详情（含测试点原始数据，教师端；归档后仍可查看） |
 | GET | `/api/problems/{id}/student-view` | 学生视图（仅公开样例） |
 | POST | `/api/problems` | 新建题目 |
-| PUT | `/api/problems/{id}` | 修改（已发布则生成新草稿版本） |
+| PUT | `/api/problems/{id}` | 修改（已发布则生成新草稿版本；已归档需先恢复） |
 | POST | `/api/problems/{id}/publish?versionId=` | 发布版本（冻结测试点） |
-| DELETE | `/api/problems/{id}` | 归档题目 |
+| DELETE | `/api/problems/{id}` | 归档题目（软删除，可查看/可恢复） |
+| POST | `/api/problems/{id}/restore` | 恢复已归档题目 |
+| DELETE | `/api/problems/{id}/permanent` | 永久删除已归档题目（未被试卷引用且无提交记录时） |
 | POST/PUT/DELETE | `/api/problems/{id}/test-cases...` | 测试点增改与归档 |
 
 ### 组卷

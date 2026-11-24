@@ -14,4 +14,6 @@ public interface TestCaseVersionRepository extends Repository<TestCaseVersion, L
     List<TestCaseVersion> findByTestCaseIdOrderByVersionNoDesc(Long testCaseId);
 
     List<TestCaseVersion> findByIdInOrderByIdAsc(Collection<Long> ids);
+
+    List<TestCaseVersion> findByTestCaseIdIn(Collection<Long> testCaseIds);
 }
